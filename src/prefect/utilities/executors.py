@@ -45,6 +45,8 @@ if TYPE_CHECKING:
 
 StateList = Union["State", List["State"]]
 
+FLOWRUNNER_LOGGER = get_logger("FlowRunner")
+
 
 def run_with_heartbeat(
     runner_method: Callable[..., "prefect.engine.state.State"]
@@ -117,7 +119,6 @@ def subprocess_heartbeat(heartbeat_cmd: List[str], logger: Logger) -> Iterator[N
             to_environment_variables(
                 prefect.context.config,
                 include={
-                    "cloud.auth_token",
                     "cloud.api_key",
                     "cloud.tenant_id",
                     "cloud.api",
@@ -316,7 +317,7 @@ def multiprocessing_safe_run_and_retrieve(
 
     try:
         logger.debug(
-            "%s: Pickling value of size %s...", name, sys.getsizeof(return_val)
+            "%s: Pickling value of size %s...", name, sys.getsizeof(return_val, -1)
         )  # Only calculate the size if debug logs are enabled
         pickled_val = cloudpickle.dumps(return_val)
         logger.debug(f"{name}: Pickling successful!")
@@ -412,7 +413,7 @@ def run_with_multiprocess_timeout(
         pickled_result = queue.get(block=True, timeout=timeout)
         logger.debug(f"{name}: Result received from subprocess, unpickling...")
         result = cloudpickle.loads(pickled_result)
-        if isinstance(result, Exception):
+        if isinstance(result, (Exception, PrefectSignal)):
             raise result
         return result
     except Empty:
@@ -697,10 +698,30 @@ def prepare_upstream_states_for_mapping(
     return map_upstream_states
 
 
+def _should_flatten(state: "State") -> bool:
+    return state.is_successful() and not state.is_skipped()
+
+
+def _can_flatten(state: "State") -> bool:
+    return hasattr(state.result, "__len__") and hasattr(state.result, "__getitem__")
+
+
 def _build_flattened_state(state: "State", index: int) -> "State":
     """Helper function for `flatten_upstream_state`"""
+    if not _should_flatten(state):
+        return state
+
     new_state = copy.copy(state)
-    new_state.result = state._result.from_value(state.result[index])  # type: ignore
+    if not _can_flatten(state):
+        message = (
+            "`flatten` was used on upstream task that did not return an iterable. "
+            "The value will be passed downstream unmodified."
+        )
+        FLOWRUNNER_LOGGER.warning(message)
+        new_state.result = state._result.from_value(state.result)  # type: ignore
+    else:
+        new_state.result = state._result.from_value(state.result[index])  # type: ignore
+
     return new_state
 
 
@@ -725,7 +746,10 @@ def flatten_mapped_children(
     executor: "prefect.executors.Executor",
 ) -> List["State"]:
     counts = executor.wait(
-        [executor.submit(lambda c: len(c._result.value), c) for c in mapped_children]
+        [
+            executor.submit(lambda c: len(c._result.value) if _can_flatten(c) else 1, c)
+            for c in mapped_children
+        ]
     )
     new_states = []
 

@@ -1,10 +1,7 @@
 # Kubernetes Job Environment
 
 ::: warning
-Flows configured with environments are being deprecated - we recommend users
-transition to using "Run Configs" instead. See [flow
-configuration](/orchestration/flow_config/overview.md) and [upgrading
-tips](/orchestration/flow_config/upgrade.md) for more information.
+Flows configured with environments are no longer supported. We recommend users transition to using [RunConfig](/orchestration/flow_config/run_configs.html) instead. See the [Flow Configuration](/orchestration/flow_config/overview.md) and [Upgrading Environments to RunConfig](/orchestration/faq/upgrade_environments.md) documentation for more information.
 :::
 
 [[toc]]
@@ -78,7 +75,6 @@ PREFECT__CONTEXT__IMAGE
 PREFECT__CONTEXT__FLOW_FILE_PATH
 PREFECT__CLOUD__USE_LOCAL_SECRETS
 PREFECT__ENGINE__FLOW_RUNNER__DEFAULT_CLASS
-PREFECT__ENGINE__TASK_RUNNER__DEFAULT_CLASS
 PREFECT__CLOUD__SEND_FLOW_RUN_LOGS
 PREFECT__LOGGING__EXTRA_LOGGERS
 ```

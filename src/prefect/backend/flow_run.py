@@ -1,5 +1,7 @@
 import logging
 import time
+
+from datetime import timedelta
 from typing import Dict, Iterable, Iterator, List, NamedTuple, Optional, Tuple, cast
 
 import pendulum
@@ -7,7 +9,7 @@ import pendulum
 import prefect
 from prefect.backend.flow import FlowView
 from prefect.backend.task_run import TaskRunView
-from prefect.engine.state import State
+from prefect.engine.state import Pending, State
 from prefect.run_configs import RunConfig
 from prefect.serialization.run_config import RunConfigSchema
 from prefect.utilities.graphql import EnumValue, with_args
@@ -17,13 +19,16 @@ from prefect.utilities.logging import get_logger
 logger = get_logger("backend.flow_run")
 
 
-def stream_flow_run_logs(flow_run_id: str) -> None:
+def stream_flow_run_logs(
+    flow_run_id: str, max_duration: timedelta = timedelta(hours=12)
+) -> None:
     """
     Basic wrapper for `watch_flow_run` to print the logs of the run
-
-    EXPERIMENTAL: This interface is experimental and subject to change
+    Args:
+        - flow_run_id: The flow run to stream logs from
+        - max_duration: Duration to wait for flow run to complete. Defaults to 12 hours.
     """
-    for log in watch_flow_run(flow_run_id):
+    for log in watch_flow_run(flow_run_id, max_duration=max_duration):
         level_name = logging.getLevelName(log.level)
         timestamp = log.timestamp.in_tz(tz="local")
         # Uses `print` instead of the logger to prevent duplicate timestamps
@@ -36,6 +41,7 @@ def watch_flow_run(
     flow_run_id: str,
     stream_states: bool = True,
     stream_logs: bool = True,
+    max_duration: timedelta = timedelta(hours=12),
 ) -> Iterator["FlowRunLog"]:
     """
     Watch execution of a flow run displaying state changes. This function will yield
@@ -44,15 +50,17 @@ def watch_flow_run(
     If both stream_states and stream_logs are `False` then this will just block until
     the flow run finishes.
 
-    EXPERIMENTAL: This interface is experimental and subject to change
-
     Args:
         - flow_run_id: The flow run to watch
         - stream_states: If set, flow run state changes will be streamed as logs
         - stream_logs: If set, logs will be streamed from the flow run
+        - max_duration: Duration to wait for flow run to complete. Defaults to 12 hours
 
     Yields:
         FlowRunLog: Sorted log entries
+
+    Raises:
+        - RuntimeError: if flow runtime exceeds `max_duration`
 
     """
 
@@ -95,11 +103,13 @@ def watch_flow_run(
 
         # Get a rounded time elapsed for display purposes
         total_time_elapsed_rounded = round(total_time_elapsed / 5) * 5
-        # Check for a really long run
-        if total_time_elapsed > 60 * 60 * 12:
+        # Check whether run has exceeded `max_duration`
+        if total_time_elapsed_rounded > int(max_duration.total_seconds()):
             raise RuntimeError(
-                "`watch_flow_run` timed out after 12 hours of waiting for completion. "
-                "Your flow run is still in state: {flow_run.state}"
+                f"`watch_flow_run` timed out after "
+                f"{24 * max_duration.days + round(max_duration.seconds / (60 * 60), 1)} "
+                "hours of waiting for completion. "
+                f"Your flow run is still in state: {flow_run.state}"
             )
 
         if (
@@ -179,8 +189,6 @@ def check_for_compatible_agents(labels: Iterable[str], since_minutes: int = 1) -
     - There are N unhealthy agents with matching labels but no healthy agents matching
     - There are no healthy agents at all and no unhealthy agents with matching labels
     - There are healthy agents but no healthy or unhealthy agent has matching labels
-
-    EXPERIMENTAL: This interface is experimental and subject to change
 
     Args:
         - labels: A set of labels; typically associated with a flow run
@@ -285,8 +293,6 @@ def check_for_compatible_agents(labels: Iterable[str], since_minutes: int = 1) -
 class FlowRunLog(NamedTuple):
     """
     Small wrapper for backend log objects
-
-    EXPERIMENTAL: This interface is experimental and subject to change
     """
 
     timestamp: pendulum.DateTime
@@ -332,8 +338,6 @@ class FlowRunView:
     backend API at the time it is created. However, each time a task run is retrieved
     the latest data for that task will be pulled since they are loaded lazily. Finished
     task runs will be cached in this object to reduce the amount of network IO.
-
-    EXPERIMENTAL: This interface is experimental and subject to change
 
     Args:
         - flow_run_id: The uuid of the flow run
@@ -525,8 +529,16 @@ class FlowRunView:
         flow_run_data = flow_run_data.copy()  # Avoid mutating the input object
 
         flow_run_id = flow_run_data.pop("id")
-        state = State.deserialize(flow_run_data.pop("serialized_state"))
-        run_config = RunConfigSchema().load(flow_run_data.pop("run_config"))
+        serialized_state = flow_run_data.pop("serialized_state")
+        state = (
+            State.deserialize(serialized_state)
+            if serialized_state  # Flow run may not have initialized its state yet
+            else Pending(message="A state for this flow run is not yet available.")
+        )
+        run_config_data = flow_run_data.pop("run_config")
+        run_config = (
+            RunConfigSchema().load(run_config_data) if run_config_data else None
+        )
 
         states_data = flow_run_data.pop("states", [])
         states = list(

@@ -8,6 +8,20 @@ We welcome issues, contributions and discussion from all users, regardless of ba
 
 Please consider [Chris White](https://github.com/cicdw) the main point of contact for the Prefect repo.
 
+# Prefect Community Discourse
+
+[Prefect Discourse](https://discourse.prefect.io/) is a collaborative space to share knowledge, discuss ideas, find answers to common questions and get support. It's an online forum that allows you to easily find:
+- information about Prefect features,
+- information about Prefect integrations,
+- troubleshooting tips,
+- detailed solutions to common data engineering problems,
+- resources to learn more about Prefect including blog posts, videos and code examples,
+- announcements about new releases and events.
+
+
+[Sign up](https://discourse.prefect.io/) and check out the [Getting started with Prefect Discourse](https://discourse.prefect.io/t/getting-started-with-prefect-discourse/25) guide.
+
+
 # Slack
 
 We have a public [Slack](https://prefect.io/slack) for chatting about Prefect, asking questions, and sharing tips.
@@ -39,7 +53,7 @@ Informative Slack threads are archived by our resident bot Marvin. Having well-w
 
 Oftentimes your question may have been answered somewhere else; some good resources to start looking before asking a question:
 * [Previous Slack messages](https://github.com/PrefectHQ/prefect/issues?q=is%3Aopen+is%3Aissue+label%3A%22Prefect+Slack+Community%22) (we do our best to archive relevant threads to GitHub!)
-* [Prefect documentation](https://docs.prefect.io/core/development/documentation.html)
+* [Prefect documentation](/core/development/documentation.html)
 * [Github issues](https://github.com/PrefectHQ/prefect/issues)
 * [StackOverflow](https://stackoverflow.com/questions/tagged/prefect)
 

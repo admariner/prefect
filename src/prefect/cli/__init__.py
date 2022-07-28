@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import os
 
 import click
 
@@ -42,7 +43,7 @@ def cli():
         agent       Manage agents
         create      Create objects
         delete      Delete objects
-        execute     Execute a flow's environment
+        execute     Execute a flow run
         run         Run a flow
         register    Register flows with an API
         heartbeat   Send heartbeats for a run
@@ -78,6 +79,38 @@ cli.add_command(_kv)
 
 
 # Miscellaneous Commands
+
+
+@cli.command()
+def repl():
+    """
+    Start an interactive Prefect CLI session
+    """
+    banner = f"""
+Welcome to the Prefect REPL
+version : {prefect.__version__}
+    """
+
+    try:
+        from click_repl import repl as _repl
+    except ImportError:
+        print(
+            """
+This command requires the 'click-repl' package. Install it first to use this feature:
+python -m pip install click-repl
+"""
+        )
+        exit(1)
+
+    from prompt_toolkit.history import FileHistory
+
+    history_path = os.path.join(prefect.config.home_dir, "repl-history")
+    prompt_kwargs = {
+        "history": FileHistory(history_path),
+    }
+
+    click.echo(banner)
+    _repl(click.get_current_context(), prompt_kwargs=prompt_kwargs)
 
 
 @cli.command(hidden=True)
@@ -130,3 +163,6 @@ def backend(api):
 
     backend_util.save_backend(api)
     click.secho("Backend switched to {}".format(api), fg="green")
+
+
+__all__ = ["backend_util"]

@@ -4,6 +4,7 @@ Tests for `FlowRunView`
 import pendulum
 import pytest
 import logging
+from datetime import timedelta
 from unittest.mock import MagicMock
 
 from prefect.backend import FlowRunView, TaskRunView
@@ -55,6 +56,17 @@ FLOW_RUN_DATA_2 = {
     "parameters": {"param": "value2"},
     "context": {"bar": "foo"},
     "labels": ["label2"],
+    "updated": pendulum.now().isoformat(),
+    "run_config": UniversalRun().serialize(),
+}
+FLOW_RUN_DATA_NULL_STATE = {
+    "id": "id-null",
+    "name": "name-null",
+    "flow_id": "flow_id-null",
+    "serialized_state": None,
+    "parameters": {},
+    "context": {},
+    "labels": [],
     "updated": pendulum.now().isoformat(),
     "run_config": UniversalRun().serialize(),
 }
@@ -174,6 +186,11 @@ def test_flow_run_view_from_returns_instance(patch_post, from_method):
         assert state.message == "past-state"
     # There are no cached tasks
     assert flow_run._cached_task_runs == {}
+
+
+def test_flow_run_view_from_flow_run_data_fills_empty_state_with_pending():
+    flow_run = FlowRunView._from_flow_run_data(FLOW_RUN_DATA_NULL_STATE)
+    assert flow_run.state.is_pending()
 
 
 def test_flow_run_view_from_returns_instance_with_loaded_static_tasks(
@@ -570,6 +587,27 @@ def test_watch_flow_run(monkeypatch):
     assert i == 5  # Assert we saw all of the expected logs
 
 
+def test_watch_flow_run_default_timeout(monkeypatch):
+    # Test the default behavior, which sets the timeout to 12 hours
+    # when the `max_duration` kwarg is not provided
+    flow_run = FlowRunView._from_flow_run_data(FLOW_RUN_DATA_1)
+    flow_run.state = Running()  # Not finished
+    flow_run.get_latest = MagicMock(return_value=flow_run)
+    flow_run.get_logs = MagicMock()
+
+    MockView = MagicMock()
+    MockView.from_flow_run_id.return_value = flow_run
+
+    monkeypatch.setattr("prefect.backend.flow_run.FlowRunView", MockView)
+
+    # Mock sleep so that we do not have a slow test
+    monkeypatch.setattr("prefect.backend.flow_run.time.sleep", MagicMock())
+
+    with pytest.raises(RuntimeError, match="timed out after 12.0 hours of waiting"):
+        for log in watch_flow_run("id"):
+            pass
+
+
 def test_watch_flow_run_timeout(monkeypatch):
     flow_run = FlowRunView._from_flow_run_data(FLOW_RUN_DATA_1)
     flow_run.state = Running()  # Not finished
@@ -584,6 +622,15 @@ def test_watch_flow_run_timeout(monkeypatch):
     # Mock sleep so that we do not have a slow test
     monkeypatch.setattr("prefect.backend.flow_run.time.sleep", MagicMock())
 
-    with pytest.raises(RuntimeError, match="timed out after 12 hours of waiting"):
-        for log in watch_flow_run("id"):
+    with pytest.raises(RuntimeError, match="timed out after 36.5 hours of waiting"):
+        for log in watch_flow_run(
+            "id", max_duration=timedelta(days=1, hours=12.5, seconds=1)
+        ):
             pass
+
+
+def test_flow_run_view_handles_null_run_config():
+    flow_run_data = FLOW_RUN_DATA_1.copy()
+    flow_run_data["run_config"] = None
+    flow_run_view = FlowRunView._from_flow_run_data(flow_run_data)
+    assert flow_run_view.run_config is None

@@ -91,7 +91,6 @@ class DockerAgent(Agent):
             from the listed registries.
         - docker_client_timeout (int, optional): The timeout to use for docker
             API calls, defaults to 60 seconds.
-        - docker_interface: This option has been deprecated and has no effect.
     """
 
     def __init__(
@@ -110,7 +109,6 @@ class DockerAgent(Agent):
         networks: List[str] = None,
         reg_allow_list: List[str] = None,
         docker_client_timeout: int = None,
-        docker_interface: bool = None,  # Deprecated in 0.14.18
     ) -> None:
         super().__init__(
             agent_config_id=agent_config_id,
@@ -143,13 +141,6 @@ class DockerAgent(Agent):
             self.container_mount_paths,
             self.host_spec,
         ) = self._parse_volume_spec(volumes or [])
-
-        if docker_interface is not None:
-            warnings.warn(
-                "DockerAgent `docker_interface` argument is deprecated and will be "
-                "removed from Prefect. Setting it has no effect.",
-                UserWarning,
-            )
 
         # Add containers to the given Docker networks
         self.networks = networks
@@ -274,9 +265,14 @@ class DockerAgent(Agent):
                     external = ntpath.normpath(fields[0])
                     internal = posixpath.normpath(fields[1])
             elif len(fields) == 1:
-                # \path1          <-- assumed container path of /path1 (relative to current drive)
-                external = ntpath.normpath(fields[0])
-                internal = external
+                if fields[0] == "//var/run/docker.sock":
+                    # Special handling for docker-in-docker
+                    external = "//var/run/docker.sock"
+                    internal = "/var/run/docker.sock"
+                else:
+                    # \path1          <-- assumed container path of /path1 (relative to current drive)
+                    external = ntpath.normpath(fields[0])
+                    internal = external
             else:
                 raise ValueError(
                     "Unable to parse volume specification '{}'".format(volume_spec)
@@ -446,9 +442,16 @@ class DockerAgent(Agent):
         # is connected to the default `bridge` network.
         # The rest of the networks are connected after creation.
         if self.networks:
+            network = self.networks[0]
             networking_config = self.docker_client.create_networking_config(
-                {self.networks[0]: self.docker_client.create_endpoint_config()}
+                {network: self.docker_client.create_endpoint_config()}
             )
+
+            # Ensure that we change the network mode from bridge to host/none if using
+            # the special predefined network names
+            if network in ("host", "none"):
+                host_config.setdefault("network_mode", network)
+
         labels = {
             "io.prefect.flow-name": flow_run.flow.name,
             "io.prefect.flow-id": flow_run.flow.id,
@@ -587,16 +590,9 @@ class DockerAgent(Agent):
         env.update(
             {
                 "PREFECT__BACKEND": config.backend,
-                "PREFECT__CLOUD__AUTH_TOKEN": (
-                    # Pull an auth token if it exists but fall back to an API key so
-                    # flows in pre-0.15.0 containers still authenticate correctly
-                    config.cloud.agent.get("auth_token")
-                    or self.flow_run_api_key
-                    or ""
-                ),
                 "PREFECT__CLOUD__API_KEY": self.flow_run_api_key or "",
                 "PREFECT__CLOUD__TENANT_ID": (
-                    # Providing a tenant id is only necessary for API keys (not tokens)
+                    # A tenant id is only required when authenticating
                     self.client.tenant_id
                     if self.flow_run_api_key
                     else ""
@@ -608,9 +604,10 @@ class DockerAgent(Agent):
                 "PREFECT__CONTEXT__IMAGE": image,
                 "PREFECT__CLOUD__USE_LOCAL_SECRETS": "false",
                 "PREFECT__ENGINE__FLOW_RUNNER__DEFAULT_CLASS": "prefect.engine.cloud.CloudFlowRunner",
-                "PREFECT__ENGINE__TASK_RUNNER__DEFAULT_CLASS": "prefect.engine.cloud.CloudTaskRunner",
                 # Backwards compatibility variable for containers on Prefect <0.15.0
                 "PREFECT__LOGGING__LOG_TO_CLOUD": str(self.log_to_cloud).lower(),
+                # Backwards compatibility variable for containers on Prefect <1.0.0
+                "PREFECT__CLOUD__AUTH_TOKEN": self.flow_run_api_key or "",
             }
         )
         return env

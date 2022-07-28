@@ -47,6 +47,7 @@ from prefect.engine.task_runner import ENDRUN, TaskRunner
 from prefect.utilities.configuration import set_temporary_config
 from prefect.utilities.debug import raise_on_exception
 from prefect.exceptions import TaskTimeoutSignal
+from prefect.utilities.edges import flatten, mapped, unmapped
 from prefect.utilities.tasks import pause_task
 
 
@@ -137,13 +138,10 @@ def test_task_with_error_has_helpful_messages(caplog):
     task_runner = TaskRunner(task=ErrorTask())
     state = task_runner.run()
     assert state.is_failed()
-    exc_repr = (
-        # Support py3.6 exception reprs
-        "ValueError('custom-error-message',)"
-        if sys.version_info < (3, 7)
-        else "ValueError('custom-error-message')"
+    assert (
+        state.message
+        == f"Error during execution of task: ValueError('custom-error-message')"
     )
-    assert state.message == f"Error during execution of task: {exc_repr}"
     assert "ValueError: custom-error-message" in caplog.text
     assert "Traceback" in caplog.text  # Traceback should be included
     assert (
@@ -179,6 +177,50 @@ def test_task_that_fails_gets_retried_up_to_max_retry_time():
     # second run should fail
     state = task_runner.run(state=state)
     assert isinstance(state, Failed)
+
+
+def test_task_that_fails_does_not_retry_if_not_in_retry_on():
+    err_task = ErrorTask(
+        retry_on={RuntimeError}, max_retries=2, retry_delay=timedelta(0)
+    )
+    task_runner = TaskRunner(task=err_task)
+
+    state = task_runner.run()
+    assert isinstance(state, Failed)
+
+
+def test_task_that_fails_retries_if_a_retry_on_subtype():
+    err_task = ErrorTask(retry_on={Exception}, max_retries=2, retry_delay=timedelta(0))
+    task_runner = TaskRunner(task=err_task)
+
+    state = task_runner.run()
+    assert isinstance(state, Retrying)
+
+
+def test_task_that_fails_retries_if_a_retry_on_type():
+    err_task = ErrorTask(retry_on={ValueError}, max_retries=2, retry_delay=timedelta(0))
+    task_runner = TaskRunner(task=err_task)
+
+    state = task_runner.run()
+    assert isinstance(state, Retrying)
+
+
+def test_task_that_fails_retries_if_a_retry_on_non_iterable_type():
+    err_task = ErrorTask(retry_on=ValueError, max_retries=2, retry_delay=timedelta(0))
+    task_runner = TaskRunner(task=err_task)
+
+    state = task_runner.run()
+    assert isinstance(state, Retrying)
+
+
+def test_task_that_fails_retries_if_any_of_a_retry_on_type():
+    err_task = ErrorTask(
+        retry_on={KeyError, ValueError}, max_retries=2, retry_delay=timedelta(0)
+    )
+    task_runner = TaskRunner(task=err_task)
+
+    state = task_runner.run()
+    assert isinstance(state, Retrying)
 
 
 def test_task_with_max_retries_0_does_not_retry():
@@ -2420,3 +2462,122 @@ class TestTaskRunNames:
 
         state = flow.run()
         assert state.result[test_task_key].result == ["hello-1", "hello-2", "hello-3"]
+
+    def test_task_pipeline(self):
+        """
+        A simple pipeline
+        """
+
+        @prefect.task()
+        def add_1(x):
+            return x + 1
+
+        from prefect import Flow
+
+        with Flow("test") as flow:
+            result = add_1(1).pipe(add_1).pipe(add_1).pipe(add_1)
+
+        state = flow.run()
+        assert state.result[result].result == 5
+
+    def test_task_pipeline_kwargs(self):
+        """
+        A simple pipeline with kwargs being passed in the pipe method
+        """
+        from datetime import datetime, timedelta
+        from prefect import Flow
+
+        @prefect.task()
+        def add_time(date: datetime, **kwargs) -> datetime:
+            delta = timedelta(**kwargs)
+            return date + delta
+
+        with Flow("test") as flow:
+            result = (
+                add_time(datetime.utcfromtimestamp(0), days=1)
+                .pipe(add_time, hours=1)
+                .pipe(add_time, minutes=1)
+            )
+
+        state = flow.run()
+        assert state.result[result].result == datetime(
+            year=1970, month=1, day=2, hour=1, minute=1
+        )
+
+    def test_task_pipeline_no_varargs(self):
+        """
+        Verify that we don't accept positional args beyond the implicitly piped argument in .pipe
+        """
+        from prefect import Flow
+
+        @prefect.task()
+        def accepts_anything(arg, **kwargs):
+            print(dict(**kwargs))
+            return arg
+
+        with Flow("test") as flow:
+            with pytest.raises(TypeError):
+                accepts_anything("initial arg").pipe(
+                    accepts_anything, "some positional arg"
+                )
+
+    def test_task_pipeline_keyword_task(self):
+        """
+        Verify that passing task as a keyword argument works fine
+        """
+        from prefect import Flow
+
+        @prefect.task()
+        def accepts_anything(arg, **kwargs):
+            return dict(**kwargs)
+
+        with Flow("test") as flow:
+            res = accepts_anything("initial arg").pipe(
+                accepts_anything, task="some kwarg"
+            )
+        state = flow.run()
+        assert state.result[res].result == dict(task="some kwarg")
+
+    def test_task_pipeline_keyword_self(self):
+        """
+        Verify that passing self as a keyword argument throws an error
+        """
+        from prefect import Flow
+
+        @prefect.task()
+        def accepts_anything(arg, **kwargs):
+            return dict(**kwargs)
+
+        with Flow("test") as flow:
+            with pytest.raises(ValueError):
+                res = accepts_anything("initial arg").pipe(
+                    accepts_anything, self="some kwarg"
+                )
+        state = flow.run()
+
+    def test_task_pipeline_edge_annotation(self):
+        """
+        Verify that passing EdgeAnnotation to pipe returns Task objects
+        that can chain further.
+        """
+        from prefect import Flow
+
+        @prefect.task
+        def add_one(number) -> int:
+            return number + 1
+
+        @prefect.task
+        def aggregate(numbers) -> int:
+            return sum(numbers)
+
+        with Flow(name="test") as flow:
+            total = (
+                add_one.map(range(5))
+                .pipe(flatten)
+                .pipe(mapped)
+                .pipe(unmapped)
+                .pipe(aggregate)
+            )
+
+        state = flow.run()
+        assert state.result[total].result == 15

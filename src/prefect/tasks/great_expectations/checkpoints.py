@@ -11,6 +11,8 @@ Prefect flow.
 from typing import Optional
 
 import great_expectations as ge
+from great_expectations.core import RunIdentifier
+from great_expectations.checkpoint import Checkpoint
 from packaging import version
 
 import prefect
@@ -63,8 +65,15 @@ class RunGreatExpectationsValidation(Task):
 
     Args:
         - checkpoint_name (str, optional): the name of a pre-configured checkpoint; should match the
-            filename of the checkpoint without the extension. Required when using the Great
+            filename of the checkpoint without the extension. Either checkpoint_name or checkpoint
+            is required when using the Great Expectations v3 API.
+        - ge_checkpoint (Checkpoint, optional): an in-memory GE `Checkpoint` object used to perform
+            validation. If not provided then `checkpoint_name` will be used to load the specified
+            checkpoint. Either checkpoint_name or checkpoint is required when using the Great
             Expectations v3 API.
+        - checkpoint_kwargs (Dict, optional): A dictionary whose keys match the parameters of
+            `CheckpointConfig` which can be used to update and populate the task's Checkpoint at runtime.
+            Only used in the Great Expectations v3 API.
         - context (DataContext, optional): an in-memory GE DataContext object. e.g.
             `ge.data_context.DataContext()` If not provided then `context_root_dir` will be used to
             look for one.
@@ -97,7 +106,9 @@ class RunGreatExpectationsValidation(Task):
     def __init__(
         self,
         checkpoint_name: str = None,
-        context: "ge.DataContext" = None,
+        ge_checkpoint: Checkpoint = None,
+        checkpoint_kwargs: dict = None,
+        context: ge.DataContext = None,
         assets_to_validate: list = None,
         batch_kwargs: dict = None,
         expectation_suite_name: str = None,
@@ -111,6 +122,8 @@ class RunGreatExpectationsValidation(Task):
         **kwargs,
     ):
         self.checkpoint_name = checkpoint_name
+        self.ge_checkpoint = ge_checkpoint
+        self.checkpoint_kwargs = checkpoint_kwargs
         self.context = context
         self.assets_to_validate = assets_to_validate
         self.batch_kwargs = batch_kwargs
@@ -127,6 +140,8 @@ class RunGreatExpectationsValidation(Task):
 
     @defaults_from_attrs(
         "checkpoint_name",
+        "ge_checkpoint",
+        "checkpoint_kwargs",
         "context",
         "assets_to_validate",
         "batch_kwargs",
@@ -142,7 +157,9 @@ class RunGreatExpectationsValidation(Task):
     def run(
         self,
         checkpoint_name: str = None,
-        context: "ge.DataContext" = None,
+        ge_checkpoint: Checkpoint = None,
+        checkpoint_kwargs: dict = None,
+        context: ge.DataContext = None,
         assets_to_validate: list = None,
         batch_kwargs: dict = None,
         expectation_suite_name: str = None,
@@ -158,10 +175,16 @@ class RunGreatExpectationsValidation(Task):
         Task run method.
 
         Args:
-            - checkpoint_name (str, optional): the name of the checkpoint; should match the filename of
-                the checkpoint without the extension. This is required for using the Great
-                Expectations v3 API.
-            - context (DataContext, optional): an in-memory GE DataContext object. e.g.
+            - checkpoint_name (str, optional): the name of a pre-configured checkpoint; should match the
+                filename of the checkpoint without the extension. Either checkpoint_name or
+                checkpoint_config is required when using the Great Expectations v3 API.
+            - ge_checkpoint (Checkpoint, optional): an in-memory GE `Checkpoint` object used to perform
+                validation. If not provided then `checkpoint_name` will be used to load the specified
+                checkpoint.
+            - checkpoint_kwargs (Dict, optional): A dictionary whose keys match the parameters of
+                `CheckpointConfig` which can be used to update and populate the task's Checkpoint at
+                runtime.
+            - context (DataContext, optional): an in-memory GE `DataContext` object. e.g.
                 `ge.data_context.DataContext()` If not provided then `context_root_dir` will be used to
                 look for one.
             - assets_to_validate (list, optional): A list of assets to validate when running the
@@ -204,12 +227,13 @@ class RunGreatExpectationsValidation(Task):
         """
 
         if version.parse(ge.__version__) < version.parse("0.13.8"):
-            self.logger.warn(
+            self.logger.warning(
                 f"You are using great_expectations version {ge.__version__} which may cause"
                 "errors in this task. Please upgrade great_expections to 0.13.8 or later."
             )
 
         runtime_environment = runtime_environment or dict()
+        checkpoint_kwargs = checkpoint_kwargs or dict()
 
         # Load context if not provided directly
         if not context:
@@ -226,23 +250,25 @@ class RunGreatExpectationsValidation(Task):
                     (expectation_suite_name and batch_kwargs),
                     assets_to_validate,
                     checkpoint_name,
+                    ge_checkpoint,
                 ]
             )
             != 1
         ):
             raise ValueError(
-                "Exactly one of expectation_suite_name + batch_kwargs, assets_to_validate, or "
-                "checkpoint_name is required to run validation."
+                "Exactly one of expectation_suite_name + batch_kwargs, assets_to_validate, "
+                "checkpoint_name, or ge_checkpoint is required to run validation."
             )
 
         results = None
-        # If there is a checkpoint name provided, run the checkpoint.
+        # If there is a checkpoint or checkpoint name provided, run the checkpoint.
         # Checkpoints are the preferred deployment of validation configuration.
-        if checkpoint_name:
-            ge_checkpoint = context.get_checkpoint(checkpoint_name)
+        if ge_checkpoint or checkpoint_name:
+            ge_checkpoint = ge_checkpoint or context.get_checkpoint(checkpoint_name)
             results = ge_checkpoint.run(
                 evaluation_parameters=evaluation_parameters,
-                run_id={"run_name": run_name or prefect.context.get("task_slug")},
+                run_id=RunIdentifier(run_name or prefect.context.get("task_slug")),
+                **checkpoint_kwargs,
             )
         else:
             # If assets are not provided directly through `assets_to_validate` then they need be loaded
@@ -256,7 +282,7 @@ class RunGreatExpectationsValidation(Task):
             results = context.run_validation_operator(
                 validation_operator,
                 assets_to_validate=assets_to_validate,
-                run_id={"run_name": run_name or prefect.context.get("task_slug")},
+                run_id=RunIdentifier(run_name or prefect.context.get("task_slug")),
                 evaluation_parameters=evaluation_parameters,
             )
 

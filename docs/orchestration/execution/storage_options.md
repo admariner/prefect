@@ -1,24 +1,23 @@
 # Storage Options
 
 ::: warning
-Flows configured with environments are being deprecated - we recommend users
-transition to using "Run Configs" instead. See [flow
-configuration](/orchestration/flow_config/overview.md) and [upgrading
-tips](/orchestration/flow_config/upgrade.md) for more information.
+Flows configured with environments are no longer supported. We recommend users transition to using [RunConfig](/orchestration/flow_config/run_configs.html) instead. See the [Flow Configuration](/orchestration/flow_config/overview.md) and [Upgrading Environments to RunConfig](/orchestration/faq/upgrade_environments.md) documentation for more information.
+
+See [Storage](/orchestration/flow_config/storage.html) for current Flow definition storage capabilities.
 :::
 
 Prefect includes a variety of `Storage` options for saving flows.
 
 As of Prefect version `0.9.0` every storage option except for `Docker` and `GitHub` will automatically have a result handler attached that will write results to the corresponding platform. For example, this means that if you register a flow with the Prefect API using the `S3` storage option then the flow's results will also be written to the same S3 bucket through the use of the [S3 Result](/api/latest/engine/results.html#s3result).
 
-Version `0.12.0` introduces a new way to store flows using the various cloud storage options (S3, GCS, Azure) and then in turn run them using Agents which orchestrate containerized environments. For more information see [below](/orchestration/execution/storage_options.html#non-docker-storage-for-containerized-environments).
+Version `0.12.0` introduced a new way to store flows using the various cloud storage options (S3, GCS, and Azure) and then, in turn, run them using agents that orchestrate containerized environments. For more information see [below](/orchestration/execution/storage_options.html#non-docker-storage-for-containerized-environments).
 
-Version `0.12.5` introduces script-based storage for all storage options. For more information see the
+Version `0.12.5` introduced script-based storage for all storage options. For more information see the
 [Using script based flow storage idiom](/core/idioms/script-based.html).
 
 ## Local
 
-[Local Storage](/api/latest/storage.html#local) is the default `Storage` option for all flows. This stores the flow as bytes in the local filesystem which means it can only be run by a [local agent](/orchestration/agents/local.html) running on the same machine.
+[Local Storage](/api/latest/storage.html#local) is the default `Storage` option for all flows. This stores the flow as bytes in the local filesystem, which means it can only be run by a [local agent](/orchestration/agents/local.html) running on the same machine.
 
 ```python
 from prefect import Flow
@@ -33,12 +32,12 @@ The flow is now available under `~/.prefect/flows/local-flow.prefect`.
 
 ::: tip Automatic Labels
 Flows registered with this storage option will automatically be labeled with
-the hostname of the machine from which it was registered; this prevents agents
+the hostname of the machine from which it was registered. This prevents agents
 not running on the same machine from attempting to run this flow.
 :::
 
 ::: tip Flow Results
-In more recent releases of Core your flow will default to using a `LocalResult` for persisting any task results in the same file location.
+In more recent releases of Prefect Core, your flow will default to using a `LocalResult` for persisting any task results in the same file location.
 :::
 
 ## Azure Blob Storage
@@ -61,7 +60,7 @@ In more recent releases of Core your flow will default to using a `AzureResult` 
 :::
 
 :::tip Azure Credentials
-Azure Storage uses an Azure [connection string](https://docs.microsoft.com/en-us/azure/storage/common/storage-configure-connection-string) for Azure authentication in aim to upload (build) or download flows, so make sure to provide a  valid connection string for your Azure account. A connection string can be set as a [secret](https://docs.prefect.io/orchestration/concepts/secrets.html#secrets) or an environment variable `AZURE_STORAGE_CONNECTION_STRING` in run configuration if it is not passed as `connection_string_secret`.
+Azure Storage uses an Azure [connection string](https://docs.microsoft.com/en-us/azure/storage/common/storage-configure-connection-string) for Azure authentication in aim to upload (build) or download flows, so make sure to provide a  valid connection string for your Azure account. A connection string can be set as a [secret](/orchestration/concepts/secrets.html#secrets) or an environment variable `AZURE_STORAGE_CONNECTION_STRING` in run configuration if it is not passed as `connection_string_secret`.
 :::
 
 ## AWS S3
@@ -112,7 +111,7 @@ GCS Storage uses Google Cloud credentials the same way as the standard [google.c
 
 ## GitHub
 
-[GitHub Storage](/api/latest/storage.html#github) is a storage option that uploads flows to a GitHub repository as `.py` files.
+[GitHub Storage](/api/latest/storage.html#github) is a storage option that reads flows from a GitHub repository as .py files at runtime.
 
 For a detailed look on how to use GitHub storage visit the [Using script based storage](/core/idioms/script-based.html) idiom.
 
@@ -122,7 +121,7 @@ GitHub storage uses a [personal access token](https://help.github.com/en/github/
 
 ## GitLab
 
-[GitLab Storage](/api/latest/storage.html#github) is a storage option that uploads flows to a GitLab repository as `.py` files.
+[GitLab Storage](/api/latest/storage.html#github) is a storage option that reads flows from a GitHub repository as .py files at runtime.
 
 Much of the GitHub example in the [script based storage](/core/idioms/script-based.html) documentation applies to GitLab as well.
 
@@ -136,7 +135,7 @@ GitLab server users can point the `host` argument to their personal GitLab insta
 
 ## Bitbucket
 
-[Bitbucket Storage](/api/latest/storage.html#bitbucket) is a storage option that uploads flows to a Bitbucket repository as `.py` files.
+[Bitbucket Storage](/api/latest/storage.html#bitbucket) is a storage option that reads flows from a GitHub repository as .py files at runtime.
 
 Much of the GitHub example in the [script based storage](/core/idioms/script-based.html) documentation applies to Bitbucket as well.
 
@@ -154,7 +153,7 @@ Unlike GitHub or GitLab, Bitbucket organizes repositories in Projects and each r
 
 ## CodeCommit
 
-[CodeCommit Storage](/api/latest/storage.html#codecommit) is a storage option that uploads flows to a CodeCommit repository as `.py` files.
+[CodeCommit Storage](/api/latest/storage.html#codecommit) is a storage option that reads flows from a GitHub repository as .py files at runtime.
 
 :::tip AWS Credentials
 CodeCommit uses AWS credentials the same way as [boto3](https://boto3.amazonaws.com/v1/documentation/api/latest/guide/configuration.html) which means both upload (build) and download (local agent) times need to have proper AWS credential configuration.

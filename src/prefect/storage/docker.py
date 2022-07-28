@@ -1,6 +1,7 @@
 import filecmp
 import json
 import os
+import copy
 import re
 import shutil
 import sys
@@ -72,7 +73,7 @@ class Docker(Storage):
         - registry_url (str, optional): URL of a registry to push the image to;
             image will not be pushed if not provided
         - base_image (str, optional): the base image for this when building this
-            image (e.g. `python:3.6`), defaults to the `prefecthq/prefect` image
+            image (e.g. `python:3.7`), defaults to the `prefecthq/prefect` image
             matching your python version and prefect core library version used
             at runtime.
         - dockerfile (str, optional): a path to a Dockerfile to use in building
@@ -172,12 +173,18 @@ class Docker(Storage):
 
         self.base_url = base_url or os.environ.get("DOCKER_HOST", default_url)
         self.tls_config = tls_config
-        self.build_kwargs = build_kwargs or {}
+        self.build_kwargs = copy.copy(build_kwargs) or {}
+        self.rm_build_kwarg = self.build_kwargs.pop("rm", True)
         self.extra_dockerfile_commands = extra_dockerfile_commands
 
         version = prefect.__version__.split("+")
         if prefect_version is None:
-            self.prefect_version = "master" if len(version) > 1 else version[0]
+            self.prefect_version = (
+                "master"
+                # The release candidate is a special development version
+                if len(version) > 1 and not version[0].endswith("rc0")
+                else version[0]
+            )
         else:
             self.prefect_version = prefect_version
 
@@ -186,6 +193,16 @@ class Docker(Storage):
                 sys.version_info.major, sys.version_info.minor
             )
             if re.match(r"^[0-9]+\.[0-9]+\.[0-9]+$", self.prefect_version) is not None:
+                self.base_image = "prefecthq/prefect:{}-python{}".format(
+                    self.prefect_version, python_version
+                )
+            elif self.prefect_version.endswith("rc0"):
+                # Development release candidate
+                self.base_image = f"prefecthq/prefect:{self.prefect_version}"
+            elif (
+                re.match(r"^[0-9]+\.[0-9]+rc[0-9]+$", self.prefect_version) is not None
+            ):
+                # Actual release candidate
                 self.base_image = "prefecthq/prefect:{}-python{}".format(
                     self.prefect_version, python_version
                 )
@@ -365,6 +382,7 @@ class Docker(Storage):
                 path="." if self.dockerfile else tempdir,
                 dockerfile=dockerfile_path,
                 tag="{}:{}".format(full_name, self.image_tag),
+                rm=self.rm_build_kwarg,
                 **self.build_kwargs,
             )
             self._parse_generator_output(output)
@@ -427,7 +445,7 @@ class Docker(Storage):
         pip_installs = "RUN pip install "
         if self.python_dependencies:
             for dependency in self.python_dependencies:
-                pip_installs += "{} ".format(dependency)
+                pip_installs += "'{}' ".format(dependency)
 
         # Write all install-time commands that should be run in the image
         installation_commands = ""

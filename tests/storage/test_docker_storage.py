@@ -3,7 +3,7 @@ import sys
 import json
 import tempfile
 import textwrap
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, ANY, patch
 from collections import OrderedDict
 
 import cloudpickle
@@ -34,7 +34,7 @@ def test_create_docker_storage():
 
 def test_cant_create_docker_with_both_base_image_and_dockerfile():
     with pytest.raises(ValueError):
-        Docker(dockerfile="path/to/file", base_image="python:3.6")
+        Docker(dockerfile="path/to/file", base_image="python:3.7")
 
 
 def test_serialize_docker_storage():
@@ -74,13 +74,13 @@ def test_add_flow_to_docker_custom_prefect_dir():
 )
 def test_empty_docker_storage(monkeypatch, platform, url, no_docker_host_var):
     monkeypatch.setattr("prefect.storage.docker.sys.platform", platform)
-    monkeypatch.setattr(sys, "version_info", MagicMock(major=3, minor=6))
+    monkeypatch.setattr(sys, "version_info", MagicMock(major=3, minor=7))
     monkeypatch.setattr(prefect, "__version__", "0.9.2+c2394823")
 
     storage = Docker()
 
     assert not storage.registry_url
-    assert storage.base_image == "python:3.6-slim"
+    assert storage.base_image == "python:3.7-slim"
     assert not storage.image_name
     assert not storage.image_tag
     assert storage.python_dependencies == ["wheel"]
@@ -105,13 +105,13 @@ def test_empty_docker_storage_on_tagged_commit(
     monkeypatch, platform, url, no_docker_host_var
 ):
     monkeypatch.setattr("prefect.storage.docker.sys.platform", platform)
-    monkeypatch.setattr(sys, "version_info", MagicMock(major=3, minor=6))
+    monkeypatch.setattr(sys, "version_info", MagicMock(major=3, minor=7))
     monkeypatch.setattr(prefect, "__version__", "0.9.2")
 
     storage = Docker()
 
     assert not storage.registry_url
-    assert storage.base_image == "prefecthq/prefect:0.9.2-python3.6"
+    assert storage.base_image == "prefecthq/prefect:0.9.2-python3.7"
     assert not storage.image_name
     assert not storage.image_tag
     assert storage.python_dependencies == ["wheel"]
@@ -120,6 +120,23 @@ def test_empty_docker_storage_on_tagged_commit(
     assert storage.prefect_version
     assert storage.base_url == url
     assert not storage.local_image
+
+
+@pytest.mark.parametrize("dev_version", ["1.0rc0", "1.0rc0+c2394823"])
+def test_base_image_release_candidate_dev_image(monkeypatch, dev_version):
+    monkeypatch.setattr(sys, "version_info", MagicMock(major=3, minor=7))
+    monkeypatch.setattr(prefect, "__version__", dev_version)
+
+    storage = Docker()
+    assert storage.base_image == "prefecthq/prefect:1.0rc0"
+
+
+def test_base_image_release_candidate(monkeypatch):
+    monkeypatch.setattr(sys, "version_info", MagicMock(major=3, minor=7))
+    monkeypatch.setattr(prefect, "__version__", "1.0rc1")
+
+    storage = Docker()
+    assert storage.base_image == "prefecthq/prefect:1.0rc1-python3.7"
 
 
 @pytest.mark.parametrize("version_info", [(3, 5), (3, 6), (3, 7)])
@@ -302,7 +319,7 @@ def test_build_image_fails_with_value_error(monkeypatch):
     flow = Flow("test")
     storage = Docker(
         registry_url="reg",
-        base_image="python:3.6",
+        base_image="python:3.7",
         image_name="test",
         image_tag="latest",
     )
@@ -315,7 +332,7 @@ def test_build_image_fails_with_value_error(monkeypatch):
 
 
 def test_build_image_fails_no_registry(monkeypatch):
-    storage = Docker(base_image="python:3.6", image_name="test", image_tag="latest")
+    storage = Docker(base_image="python:3.7", image_name="test", image_tag="latest")
 
     client = MagicMock()
     monkeypatch.setattr("docker.APIClient", client)
@@ -329,7 +346,7 @@ def test_build_image_passes(monkeypatch):
     flow = Flow("test")
     storage = Docker(
         registry_url="reg",
-        base_image="python:3.6",
+        base_image="python:3.7",
         image_name="test",
         image_tag="latest",
     )
@@ -352,7 +369,7 @@ def test_build_image_passes(monkeypatch):
 @pytest.mark.skip(reason="Needs to be mocked so it can work on CircleCI")
 def test_build_image_passes_and_pushes(monkeypatch):
     flow = Flow("test")
-    storage = Docker(registry_url="reg", base_image="python:3.6")
+    storage = Docker(registry_url="reg", base_image="python:3.7")
 
     pull_image = MagicMock()
     monkeypatch.setattr("prefect.storage.Docker.pull_image", pull_image)
@@ -378,8 +395,50 @@ def test_build_image_passes_and_pushes(monkeypatch):
     assert "reg" in remove.call_args[1]["image"]
 
 
+def test_build_with_default_rm_true(monkeypatch):
+    storage = Docker(
+        registry_url="reg",
+        base_image="python:3.7",
+        image_name="test",
+        image_tag="latest",
+    )
+
+    pull_image = MagicMock()
+    monkeypatch.setattr("prefect.storage.Docker.pull_image", pull_image)
+
+    mock_docker_client = MagicMock()
+    mock_docker_client.images.return_value = ["test"]
+    with patch.object(storage, "_get_client") as mock_docker_client_fn:
+        mock_docker_client_fn.return_value = mock_docker_client
+
+        output = storage.build(push=False)
+        mock_docker_client.build.assert_called_once_with(
+            dockerfile=ANY, path=ANY, tag="reg/test:latest", rm=True
+        )
+
+
+def test_build_with_rm_override(monkeypatch):
+    storage = Docker(
+        registry_url="reg",
+        base_image="python:3.7",
+        image_name="test",
+        image_tag="latest",
+        build_kwargs={"rm": False},
+    )
+
+    mock_docker_client = MagicMock()
+    mock_docker_client.images.return_value = ["test"]
+    with patch.object(storage, "_get_client") as mock_docker_client_fn:
+        mock_docker_client_fn.return_value = mock_docker_client
+
+        output = storage.build(push=False)
+        mock_docker_client.build.assert_called_once_with(
+            dockerfile=ANY, path=ANY, tag="reg/test:latest", rm=False
+        )
+
+
 def test_create_dockerfile_from_base_image():
-    storage = Docker(base_image="python:3.6")
+    storage = Docker(base_image="python:3.7")
 
     with tempfile.TemporaryDirectory() as tempdir:
         dpath = storage.create_dockerfile_object(directory=tempdir)
@@ -387,7 +446,7 @@ def test_create_dockerfile_from_base_image():
         with open(dpath, "r") as dockerfile:
             output = dockerfile.read()
 
-        assert "FROM python:3.6" in output
+        assert "FROM python:3.7" in output
 
 
 def test_create_dockerfile_from_dockerfile():
@@ -579,18 +638,18 @@ def test_create_dockerfile_from_dockerfile_uses_tempdir_path():
 @pytest.mark.parametrize(
     "prefect_version",
     [
-        ("0.5.3", ("FROM prefecthq/prefect:0.5.3-python3.6",)),
+        ("0.5.3", ("FROM prefecthq/prefect:0.5.3-python3.7",)),
         (
             "master",
             (
-                "FROM python:3.6-slim",
+                "FROM python:3.7-slim",
                 "pip show prefect || pip install git+https://github.com/PrefectHQ/prefect.git@master",
             ),
         ),
         (
             "424be6b5ed8d3be85064de4b95b5c3d7cb665510",
             (
-                "FROM python:3.6-slim",
+                "FROM python:3.7-slim",
                 "apt update && apt install -y gcc git make && rm -rf /var/lib/apt/lists/*",
                 "pip show prefect || pip install git+https://github.com/PrefectHQ/prefect.git@424be6b5ed8d3be85064de4b95b5c3d7cb665510#egg=prefect[all_orchestration_extras]",
             ),
@@ -598,7 +657,7 @@ def test_create_dockerfile_from_dockerfile_uses_tempdir_path():
     ],
 )
 def test_create_dockerfile_from_prefect_version(monkeypatch, prefect_version):
-    monkeypatch.setattr(sys, "version_info", MagicMock(major=3, minor=6))
+    monkeypatch.setattr(sys, "version_info", MagicMock(major=3, minor=7))
 
     storage = Docker(prefect_version=prefect_version[0])
 
@@ -630,6 +689,30 @@ def test_create_dockerfile_with_weird_flow_name():
 
             assert (
                 "COPY what-is-this.flow /opt/prefect/flows/what-is-this.prefect"
+                in output
+            )
+
+
+def test_create_dockerfile_with_complex_python_dependencies():
+    with tempfile.TemporaryDirectory() as tempdir_outside:
+
+        with open(os.path.join(tempdir_outside, "test"), "w+") as t:
+            t.write("asdf")
+
+        with tempfile.TemporaryDirectory() as tempdir:
+
+            storage = Docker(
+                registry_url="test1",
+                base_image="test3",
+                python_dependencies=["lib[flavor]<2.0.0,>=1.1.1", "other-lib"],
+            )
+            dpath = storage.create_dockerfile_object(directory=tempdir)
+
+            with open(dpath, "r") as dockerfile:
+                output = dockerfile.read()
+
+            assert (
+                "RUN pip install 'lib[flavor]<2.0.0,>=1.1.1' 'other-lib' 'wheel'"
                 in output
             )
 
@@ -773,7 +856,7 @@ def test_run_healthchecks_arg_custom_prefect_dir(ignore_healthchecks, tmpdir):
 
 
 def test_pull_image(capsys, monkeypatch):
-    storage = Docker(base_image="python:3.6")
+    storage = Docker(base_image="python:3.7")
 
     client = MagicMock()
     client.pull.return_value = [{"progress": "test", "status": "100"}]
@@ -787,7 +870,7 @@ def test_pull_image(capsys, monkeypatch):
 
 
 def test_pull_image_raises_if_error_encountered(monkeypatch):
-    storage = Docker(base_image="python:3.6")
+    storage = Docker(base_image="python:3.7")
 
     client = MagicMock()
     client.pull.return_value = [
@@ -801,7 +884,7 @@ def test_pull_image_raises_if_error_encountered(monkeypatch):
 
 
 def test_push_image(capsys, monkeypatch):
-    storage = Docker(base_image="python:3.6")
+    storage = Docker(base_image="python:3.7")
 
     client = MagicMock()
     client.push.return_value = [{"progress": "test", "status": "100"}]
@@ -816,7 +899,7 @@ def test_push_image(capsys, monkeypatch):
 
 
 def test_push_image_raises_if_error_encountered(monkeypatch):
-    storage = Docker(base_image="python:3.6")
+    storage = Docker(base_image="python:3.7")
 
     client = MagicMock()
     client.push.return_value = [
@@ -830,7 +913,7 @@ def test_push_image_raises_if_error_encountered(monkeypatch):
 
 
 def test_docker_storage_name():
-    storage = Docker(base_image="python:3.6")
+    storage = Docker(base_image="python:3.7")
     with pytest.raises(ValueError):
         storage.name
 
@@ -876,7 +959,7 @@ def test_docker_storage_output_stream(contents, expected, capsys):
 
 
 def test_docker_storage_name_registry_url_none():
-    storage = Docker(base_image="python:3.6")
+    storage = Docker(base_image="python:3.7")
     with pytest.raises(ValueError):
         storage.name
 
@@ -893,7 +976,7 @@ def test_docker_storage_get_flow_method(tmpdir):
     with open(flow_path, "wb") as f:
         cloudpickle.dump(flow, f)
 
-    storage = Docker(base_image="python:3.6", prefect_directory=str(tmpdir))
+    storage = Docker(base_image="python:3.7", prefect_directory=str(tmpdir))
     storage.add_flow(flow)
 
     f = storage.get_flow(flow.name)

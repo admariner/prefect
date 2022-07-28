@@ -13,9 +13,8 @@ from prefect.executors.base import Executor
 from prefect.utilities.importtools import import_object
 
 if TYPE_CHECKING:
-    import dask
     from distributed import Future, Event
-    import multiprocessing.pool
+    from dask.delayed import Delayed
     import concurrent.futures
 
 
@@ -65,21 +64,17 @@ def _maybe_run(event_name: str, fn: Callable, *args: Any, **kwargs: Any) -> Any:
 class DaskExecutor(Executor):
     """
     An executor that runs all functions using the `dask.distributed` scheduler.
-
     By default a temporary `distributed.LocalCluster` is created (and
     subsequently torn down) within the `start()` contextmanager. To use a
     different cluster class (e.g.
     [`dask_kubernetes.KubeCluster`](https://kubernetes.dask.org/)), you can
     specify `cluster_class`/`cluster_kwargs`.
-
     Alternatively, if you already have a dask cluster running, you can provide
     the address of the scheduler via the `address` kwarg.
-
     Note that if you have tasks with tags of the form `"dask-resource:KEY=NUM"`
     they will be parsed and passed as
     [Worker Resources](https://distributed.dask.org/en/latest/resources.html)
     of the form `{"KEY": float(NUM)}` to the Dask Scheduler.
-
     Args:
         - address (string, optional): address of a currently running dask
             scheduler; if one is not provided, a temporary cluster will be
@@ -100,18 +95,26 @@ class DaskExecutor(Executor):
             your Prefect configuration.
         - performance_report_path (str, optional): An optional path for the [dask performance
             report](https://distributed.dask.org/en/latest/api.html#distributed.performance_report).
-
+        - disable_cancellation_event (bool, optional): By default, Prefect uses a
+            Dask event to allow for better cancellation of task runs. Sometimes this
+            can cause strain on the scheduler as each task needs to retrieve a client
+            to check the status of the cancellation event. If set to `False`, we will
+            skip this check.
+        - watch_worker_status (bool, optional): By default, Prefect subscribes to Dask
+            worker events and logs when a worker is added or removed. This provides a
+            hook for users to extend behavior on worker changes. This setting is `None`
+            by default and will be enabled unless `adapt_kwargs` is set, in which case
+            it will be disabled. Adaptive clusters often require this feature to be
+            disabled as they use the worker status events for scaling and only one
+            subscriber is allowed. If you set the value to `True` or `False`, it will be
+            respected regardless of the value of `adapt_kwargs`.
     Examples:
-
     Using a temporary local dask cluster:
-
     ```python
     executor = DaskExecutor()
     ```
-
     Using a temporary cluster running elsewhere. Any Dask cluster class should
     work, here we use [dask-cloudprovider](https://cloudprovider.dask.org):
-
     ```python
     executor = DaskExecutor(
         cluster_class="dask_cloudprovider.FargateCluster",
@@ -122,9 +125,7 @@ class DaskExecutor(Executor):
         },
     )
     ```
-
     Connecting to an existing dask cluster
-
     ```python
     executor = DaskExecutor(address="192.0.2.255:8786")
     ```
@@ -139,6 +140,8 @@ class DaskExecutor(Executor):
         client_kwargs: dict = None,
         debug: bool = None,
         performance_report_path: str = None,
+        disable_cancellation_event: bool = False,
+        watch_worker_status: bool = None,
     ):
         if address is None:
             address = context.config.engine.executor.dask.address or None
@@ -181,6 +184,9 @@ class DaskExecutor(Executor):
         self.cluster_kwargs = cluster_kwargs
         self.adapt_kwargs = adapt_kwargs
         self.client_kwargs = client_kwargs
+        self.disable_cancellation_event = disable_cancellation_event
+        self.watch_worker_status = watch_worker_status
+
         # Runtime attributes
         self.client = None
         # These are coupled - they're either both None, or both non-None.
@@ -199,7 +205,6 @@ class DaskExecutor(Executor):
     def start(self) -> Iterator[None]:
         """
         Context manager for initializing execution.
-
         Creates a `dask.distributed.Client` and yields it.
         """
         if sys.platform != "win32":
@@ -257,7 +262,9 @@ class DaskExecutor(Executor):
     async def on_worker_status_changed(self, op: str, message: dict) -> None:
         """
         This method is triggered when a worker is added or removed from the cluster.
-
+        This method will not be called if `watch_worker_status` is not set.
+        We recommend not relying on this method since worker status subscription is used
+        by Dask cluster implementations to manage worker state.
         Args:
             - op (str): Either "add" or "remove"
             - message (dict): Information about the event that the scheduler has sent
@@ -310,16 +317,21 @@ class DaskExecutor(Executor):
         from distributed import Event
 
         is_inproc = self.client.scheduler.address.startswith("inproc")  # type: ignore
-        if self.address is not None or is_inproc:
+        if (
+            self.address is not None or is_inproc
+        ) and not self.disable_cancellation_event:
             self._futures = weakref.WeakSet()
             self._should_run_event = Event(
                 f"prefect-{uuid.uuid4().hex}", client=self.client
             )
             self._should_run_event.set()
 
-        self._watch_dask_events_task = asyncio.run_coroutine_threadsafe(
-            self._watch_dask_events(), self.client.loop.asyncio_loop  # type: ignore
-        )
+        if self.watch_worker_status is True or (
+            self.watch_worker_status is None and not self.adapt_kwargs
+        ):
+            self._watch_dask_events_task = asyncio.run_coroutine_threadsafe(
+                self._watch_dask_events(), self.client.loop.asyncio_loop  # type: ignore
+            )
 
     def _post_start_yield(self) -> None:
         from distributed import wait
@@ -400,14 +412,12 @@ class DaskExecutor(Executor):
     ) -> "Future":
         """
         Submit a function to the executor for execution. Returns a Future object.
-
         Args:
             - fn (Callable): function that is being submitted for execution
             - *args (Any): arguments to be passed to `fn`
             - extra_context (dict, optional): an optional dictionary with extra information
                 about the submitted task
             - **kwargs (Any): keyword arguments to be passed to `fn`
-
         Returns:
             - Future: a Future-like object that represents the computation of `fn(*args, **kwargs)`
         """
@@ -427,10 +437,8 @@ class DaskExecutor(Executor):
     def wait(self, futures: Any) -> Any:
         """
         Resolves the Future objects to their values. Blocks until the computation is complete.
-
         Args:
             - futures (Any): single or iterable of future-like objects to compute
-
         Returns:
             - Any: an iterable of resolved futures with similar shape to the input
         """
@@ -462,8 +470,7 @@ class DaskExecutor(Executor):
 
 
 def _multiprocessing_pool_initializer() -> None:
-    """Initialize a process used in a `multiprocssing.Pool`.
-
+    """Initialize a process used in a `concurrent.futures.ProcessPoolExecutor`.
     Ensures the standard atexit handlers are run."""
     import signal
 
@@ -474,7 +481,6 @@ class LocalDaskExecutor(Executor):
     """
     An executor that runs all functions locally using `dask` and a configurable
     dask scheduler.
-
     Args:
         - scheduler (str): The local dask scheduler to use; common options are
             "threads", "processes", and "synchronous".  Defaults to "threads".
@@ -484,7 +490,7 @@ class LocalDaskExecutor(Executor):
     def __init__(self, scheduler: str = "threads", **kwargs: Any):
         self.scheduler = self._normalize_scheduler(scheduler)
         self.dask_config = kwargs
-        self._pool = None  # type: Optional[multiprocessing.pool.Pool]
+        self._pool = None  # type: Optional[concurrent.futures.Executor]
         super().__init__()
 
     @staticmethod
@@ -512,11 +518,11 @@ class LocalDaskExecutor(Executor):
         if self._pool is None:
             return
 
-        # Terminate the pool
-        self._pool.terminate()
+        # Shutdown the pool
+        self._pool.shutdown(wait=False)
 
         if self.scheduler == "threads":
-            # `ThreadPool.terminate()` doesn't stop running tasks, only
+            # `ThreadPoolExecutor.shutdown()` doesn't stop running tasks, only
             # prevents new tasks from running. In CPython we can attempt to
             # raise an exception in all threads. This exception will be raised
             # the next time the task does something with the Python api.
@@ -543,7 +549,7 @@ class LocalDaskExecutor(Executor):
             else:
                 id_type = ctypes.c_long
 
-            for t in self._pool._pool:  # type: ignore
+            for t in self._pool._threads:  # type: ignore
                 ctypes.pythonapi.PyThreadState_SetAsyncExc(
                     id_type(t.ident), ctypes.py_object(KeyboardInterrupt)
                 )
@@ -574,14 +580,13 @@ class LocalDaskExecutor(Executor):
             else:
                 num_workers = dask.config.get("num_workers", None) or CPU_COUNT
                 if self.scheduler == "threads":
-                    from multiprocessing.pool import ThreadPool
+                    from concurrent.futures import ThreadPoolExecutor
 
-                    self._pool = ThreadPool(num_workers)
+                    self._pool = ThreadPoolExecutor(num_workers)
                 else:
-                    from dask.multiprocessing import get_context
+                    from concurrent.futures import ProcessPoolExecutor
 
-                    context = get_context()
-                    self._pool = context.Pool(
+                    self._pool = ProcessPoolExecutor(
                         num_workers, initializer=_multiprocessing_pool_initializer
                     )
             try:
@@ -595,23 +600,20 @@ class LocalDaskExecutor(Executor):
                     if exiting_early:
                         self._interrupt_pool()
                     else:
-                        self._pool.close()
-                    self._pool.join()
+                        self._pool.shutdown(wait=True)
                     self._pool = None
 
     def submit(
         self, fn: Callable, *args: Any, extra_context: dict = None, **kwargs: Any
-    ) -> "dask.delayed":
+    ) -> "Delayed":
         """
         Submit a function to the executor for execution. Returns a `dask.delayed` object.
-
         Args:
             - fn (Callable): function that is being submitted for execution
             - *args (Any): arguments to be passed to `fn`
             - extra_context (dict, optional): an optional dictionary with extra
                 information about the submitted task
             - **kwargs (Any): keyword arguments to be passed to `fn`
-
         Returns:
             - dask.delayed: a `dask.delayed` object that represents the
                 computation of `fn(*args, **kwargs)`
@@ -623,16 +625,14 @@ class LocalDaskExecutor(Executor):
         key = _make_task_key(**(extra_context or {}))
         if key is not None:
             extra_kwargs["dask_key_name"] = key
-        return dask.delayed(fn, pure=False)(*args, **kwargs, **extra_kwargs)
+        return dask.delayed(fn, pure=False)(*args, **kwargs, **extra_kwargs)  # type: ignore
 
     def wait(self, futures: Any) -> Any:
         """
         Resolves a (potentially nested) collection of `dask.delayed` object to
         its values. Blocks until the computation is complete.
-
         Args:
             - futures (Any): iterable of `dask.delayed` objects to compute
-
         Returns:
             - Any: an iterable of resolved futures
         """

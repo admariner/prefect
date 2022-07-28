@@ -65,6 +65,7 @@ If you are on a Standard or Enterprise plan, you can also configure Prefect API 
 
 - Cancel a flow run
 - Pause a flow's schedule
+- Start a new flow run
 
 
 ## Messages
@@ -115,7 +116,7 @@ All event types provide the following attributes:
 
 This event fires if a flow is late to start or late to finish. Specifically, you can configure an SLA one of the following:
 
-- The flow has not entered a running state some time after the scheduled start time
+- The flow has not entered a submitted or running state some time after the scheduled start time
 - The flow has not entered a finished state some time after entering a running state 
 
 **Attributes**
